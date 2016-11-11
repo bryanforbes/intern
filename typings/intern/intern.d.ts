@@ -1,9 +1,7 @@
-/// <reference path="../chai/chai.d.ts" />
-/// <reference path="../digdug/digdug.d.ts" />
-/// <reference path="../leadfoot/leadfoot.d.ts" />
-/// <reference path="../dojo2/dojo.d.ts" />
+/// <reference types="chai" />
 
 declare module 'intern' {
+	import 'dojo-typings/custom/dojo2/dojo';
 	import main = require('intern/main');
 	export = main;
 }
