@@ -60,5 +60,5 @@
     "@types/node": "6.0.46",
     "dojo-typings": "1.11.5"
   },
-  "typings": "./typings/intern/intern.d.ts"
+  "typings": "./index.d.ts"
 }
