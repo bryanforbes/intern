@@ -55,5 +55,10 @@
   "bin": {
     "intern-client": "./bin/intern-client.js",
     "intern-runner": "./bin/intern-runner.js"
+  },
+  "optionalDependencies": {
+    "@types/chai": "3.4.34",
+    "@types/node": "6.0.46",
+    "dojo-typings": "1.11.5"
   }
 }
