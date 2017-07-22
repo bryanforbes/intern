@@ -13,6 +13,7 @@ import resolveEnvironments from '../resolveEnvironments';
 import Command from '@theintern/leadfoot/Command';
 import Tunnel, { TunnelOptions, DownloadProgressEvent } from '@theintern/digdug/Tunnel';
 import Server from '../Server';
+import ExpressServer from '../ExpressServer';
 import Suite, { isSuite } from '../Suite';
 import RemoteSuite from '../RemoteSuite';
 import { RuntimeEnvironment } from '../types';
@@ -42,11 +43,13 @@ import Lcov from '../reporters/Lcov';
 import Benchmark from '../reporters/Benchmark';
 import TeamCity from '../reporters/TeamCity';
 
+ExpressServer;
+
 const console: Console = global.console;
 const process: NodeJS.Process = global.process;
 
 export default class Node extends Executor<Events, Config, NodePlugins> {
-	server: Server;
+	server: ExpressServer;
 	tunnel: Tunnel;
 
 	protected _coverageMap: CoverageMap;
@@ -255,7 +258,7 @@ export default class Node extends Executor<Events, Config, NodePlugins> {
 
 				const promises: Promise<any>[] = [];
 				if (this.server) {
-					promises.push(this.server.stop().then(() => this.emit('serverEnd', this.server)));
+					promises.push(this.server.stop().then(() => this.emit('serverEnd', this.server as any)));
 				}
 				if (this.tunnel) {
 					promises.push(this.tunnel.stop().then(() => this.emit('tunnelStop', { tunnel: this.tunnel })));
@@ -283,7 +286,7 @@ export default class Node extends Executor<Events, Config, NodePlugins> {
 				config.serveOnly
 			) {
 				const serverTask = new Task<void>((resolve, reject) => {
-					const server: Server = new Server({
+					const server: ExpressServer = new ExpressServer({
 						basePath: config.basePath,
 						executor: this,
 						port: config.serverPort,
@@ -294,7 +297,7 @@ export default class Node extends Executor<Events, Config, NodePlugins> {
 					server.start()
 						.then(() => {
 							this.server = server;
-							return this.emit('serverStart', server);
+							return this.emit('serverStart', server as any);
 						})
 						.then(resolve, reject);
 				});
