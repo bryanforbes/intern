@@ -12,6 +12,8 @@ import Node from './executors/Node';
 import { Message } from './channels/Base';
 import * as WebSocket from 'ws';
 import * as bodyParser from 'body-parser';
+import * as createError from 'http-errors';
+import * as statuses from 'statuses';
 
 const { mime } = express.static;
 
@@ -35,7 +37,6 @@ export default class Server implements ServerProperties {
 	protected _codeCache: { [filename: string]: { mtime: number, data: string } } | null;
 	protected _httpServer: HttpServer | null;
 	protected _sessions: { [id: string]: { listeners: ServerListener[] } };
-	protected _static: express.Handler | null;
 	protected _wsServer: WebSocket.Server | null;
 
 	constructor(options: ServerOptions) {
@@ -60,22 +61,20 @@ export default class Server implements ServerProperties {
 				this.executor.emit('error', error);
 			});
 
-			this._static = express.static(this.basePath);
-
 			app.use(bodyParser.json());
 			app.use(bodyParser.urlencoded({ extended: true }));
 
-			app.use(/^\/__intern/, express.static(this.executor.config.internPath));
+			app.use(/^\/__intern/, express.static(this.executor.config.internPath, { fallthrough: false }));
 
 			// TODO: Allow user to add middleware here
 
-			app.use((request, response, next) => this._handleInstrumentation(request, response, next));
-			app.use(this._static!);
-			app.use((request, response, next) => this._handlePost(request, response, next));
-			app.use((_, response) => {
-				response.statusCode = 501;
-				response.end();
-			});
+			app.use(
+				this._handleInstrumentation.bind(this),
+				express.static(this.basePath, { fallthrough: false }),
+				this._handlePost.bind(this),
+				(_: any, __: any, next: express.NextFunction) => next(createError(501)),
+				this._handleError.bind(this)
+			);
 
 			const server = this._httpServer = app.listen(this.port, () => {
 				resolve();
@@ -154,7 +153,7 @@ export default class Server implements ServerProperties {
 
 	private _handlePost(request: express.Request, response: express.Response, next: express.NextFunction) {
 		if (request.method !== 'POST') {
-			next();
+			return next();
 		}
 
 		try {
@@ -170,20 +169,18 @@ export default class Server implements ServerProperties {
 
 			this.executor.log('Received HTTP messages');
 
-			Promise.all(messages.map(message => this._handleMessage(message))).then(
-				() => {
+			Promise.all(messages.map(message => this._handleMessage(message)))
+				.then(() => {
 					response.statusCode = 204;
 					response.end();
-				},
-				() => {
-					response.statusCode = 500;
-					response.end();
-				}
-			);
+				})
+				.catch(error => {
+					next(createError(500, error));
+				})
+			;
 		}
 		catch (error) {
-			response.statusCode = 500;
-			response.end();
+			next(createError(500, error));
 		}
 	}
 
@@ -191,7 +188,6 @@ export default class Server implements ServerProperties {
 		const wholePath = normalizePath(resolve(join(this.basePath, request.url)));
 
 		if (!(request.method === 'HEAD' || request.method === 'GET') ||
-			!/\.js(?:$|\?)/.test(request.url) ||
 			!this.executor.shouldInstrumentFile(wholePath)) {
 			return next();
 		}
@@ -204,7 +200,7 @@ export default class Server implements ServerProperties {
 
 			if (error || !stats.isFile()) {
 				this.executor.log('Unable to serve', wholePath, '(unreadable)');
-				return next();
+				return next(createError(404, error, { expose: false }));
 			}
 
 			this.executor.log('Serving', wholePath);
@@ -240,7 +236,7 @@ export default class Server implements ServerProperties {
 					}
 
 					if (error) {
-						return next();
+						return next(createError(404, error, { expose: false }));
 					}
 
 					// providing `wholePath` to the instrumenter instead of a partial filename is necessary because
@@ -255,6 +251,22 @@ export default class Server implements ServerProperties {
 				});
 			}
 		});
+	}
+
+	private _handleError(
+		error: createError.HttpError,
+		request: express.Request,
+		response: express.Response,
+		_: express.NextFunction
+	) {
+		const message = error.expose ? error.message : statuses[error.status || response.statusCode];
+
+		response.writeHead(error.statusCode, {
+			'Content-Type': 'text/html;charset=utf-8'
+		});
+
+		response.end(`<!DOCTYPE html><title>${error.status} ${message}</title><h1>${error.status} ${message}: ${request.url}</h1>
+<!-- ${new Array(512).join('.')} -->`);
 	}
 
 	private _handleMessage(message: Message): Promise<any> {
