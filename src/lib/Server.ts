@@ -69,7 +69,8 @@ export default class Server implements ServerProperties {
 
 			// TODO: Allow user to add middleware here
 
-			app.use((request, response, next) => this._handleFile(request, response, next));
+			app.use((request, response, next) => this._handleInstrumentation(request, response, next));
+			app.use(this._static!);
 			app.use((request, response, next) => this._handlePost(request, response, next));
 			app.use((_, response) => {
 				response.statusCode = 501;
@@ -186,22 +187,15 @@ export default class Server implements ServerProperties {
 		}
 	}
 
-	private _handleFile(request: express.Request, response: express.Response, next: express.NextFunction) {
+	private _handleInstrumentation(request: express.Request, response: express.Response, next: express.NextFunction) {
 		const wholePath = normalizePath(resolve(join(this.basePath, request.url)));
 
-		if (request.method === 'HEAD' || request.method === 'GET') {
-			if (!/\.js(?:$|\?)/.test(request.url) || !this.executor.shouldInstrumentFile(wholePath)) {
-				return this._static!(request, response, next);
-			}
-			else {
-				return this._handleInstrumented(wholePath, response, request.method === 'HEAD');
-			}
+		if (!(request.method === 'HEAD' || request.method === 'GET') ||
+			!/\.js(?:$|\?)/.test(request.url) ||
+			!this.executor.shouldInstrumentFile(wholePath)) {
+			return next();
 		}
 
-		next();
-	}
-
-	private _handleInstrumented(wholePath: string, response: express.Response, omitContent: boolean) {
 		stat(wholePath, (error, stats) => {
 			// The server was stopped before this file was served
 			if (!this._httpServer) {
@@ -210,8 +204,7 @@ export default class Server implements ServerProperties {
 
 			if (error || !stats.isFile()) {
 				this.executor.log('Unable to serve', wholePath, '(unreadable)');
-				this._send404(response);
-				return;
+				return next();
 			}
 
 			this.executor.log('Serving', wholePath);
@@ -221,7 +214,7 @@ export default class Server implements ServerProperties {
 					'Content-Type': contentType,
 					'Content-Length': Buffer.byteLength(data)
 				});
-				response.end(omitContent ? '' : data, callback);
+				response.end(request.method === 'HEAD' ? '' : data, callback);
 			};
 			const callback = (error?: Error) => {
 				if (error) {
@@ -247,8 +240,7 @@ export default class Server implements ServerProperties {
 					}
 
 					if (error) {
-						this._send404(response);
-						return;
+						return next();
 					}
 
 					// providing `wholePath` to the instrumenter instead of a partial filename is necessary because
@@ -307,14 +299,6 @@ export default class Server implements ServerProperties {
 	private _publish(message: Message) {
 		const listeners = this._getSession(message.sessionId).listeners;
 		return Promise.all(listeners.map(listener => listener(message.name, message.data)));
-	}
-
-	private _send404(response: express.Response) {
-		response.writeHead(404, {
-			'Content-Type': 'text/html;charset=utf-8'
-		});
-		response.end(`<!DOCTYPE html><title>404 Not Found</title><h1>404 Not Found</h1>` +
-			`<!-- ${new Array(512).join('.')} -->`);
 	}
 }
 
