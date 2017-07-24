@@ -13,7 +13,6 @@ import resolveEnvironments from '../resolveEnvironments';
 import Command from '@theintern/leadfoot/Command';
 import Tunnel, { TunnelOptions, DownloadProgressEvent } from '@theintern/digdug/Tunnel';
 import Server from '../Server';
-import ExpressServer from '../ExpressServer';
 import Suite, { isSuite } from '../Suite';
 import RemoteSuite from '../RemoteSuite';
 import { RuntimeEnvironment } from '../types';
@@ -43,13 +42,11 @@ import Lcov from '../reporters/Lcov';
 import Benchmark from '../reporters/Benchmark';
 import TeamCity from '../reporters/TeamCity';
 
-ExpressServer;
-
 const console: Console = global.console;
 const process: NodeJS.Process = global.process;
 
 export default class Node extends Executor<Events, Config, NodePlugins> {
-	server: ExpressServer;
+	server: Server;
 	tunnel: Tunnel;
 
 	protected _coverageMap: CoverageMap;
@@ -286,7 +283,7 @@ export default class Node extends Executor<Events, Config, NodePlugins> {
 				config.serveOnly
 			) {
 				const serverTask = new Task<void>((resolve, reject) => {
-					const server: ExpressServer = new ExpressServer({
+					const server: Server = new Server({
 						basePath: config.basePath,
 						executor: this,
 						port: config.serverPort,

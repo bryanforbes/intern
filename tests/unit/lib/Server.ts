@@ -1,7 +1,7 @@
 import _Server from 'src/lib/Server';
 import { mockNodeExecutor } from '../../support/unit/mocks';
 import { basename, join, normalize } from 'path';
-import { mixin } from '@dojo/core/lang';
+import { mixin, assign } from '@dojo/core/lang';
 
 const mockRequire = <mocking.MockRequire>intern.getPlugin('mockRequire');
 
@@ -245,13 +245,61 @@ registerSuite('lib/Server', function () {
 		Server: MockWebSocketServer
 	};
 
+	function mockExpress() {
+		return {
+			middleware: [] as any[],
+			use(middleware: any, data: any) {
+				this.middleware.push(typeof middleware === 'function' ? middleware : data);
+			},
+			listen(port: number, callback: () => void) {
+				const server = new MockHttpServer((request, response) => {
+					let index = -1;
+					const next = () => {
+						index++;
+						this.middleware[index] && this.middleware[index](request, response, next);
+					};
+					next();
+				});
+
+				server.listen(port, callback);
+
+				return server;
+			}
+		};
+	}
+
+	function mockMiddleware(_: any, __: any, callback: () => void) {
+		callback();
+	}
+
+	const mockBodyParser = {
+		json() { return mockMiddleware; },
+		urlencoded() { return mockMiddleware; }
+	};
+
+	function mockExpressStatic() {
+		return mockMiddleware;
+	}
+
+	assign(mockExpressStatic, {
+		mime: {
+			lookup() { return 'application/javascript'; }
+		}
+	});
+
+	assign(mockExpress, {
+		static: mockExpressStatic
+	});
+
 	return {
 		before() {
 			return mockRequire(require, 'src/lib/Server', {
 				'fs': mockFs,
 				'http': mockHttp,
 				'path': mockPath,
-				'ws': mockWebSocket
+				'ws': mockWebSocket,
+				'express': mockExpress,
+				'body-parser': mockBodyParser
 			}).then(resource => {
 				removeMocks = resource.remove;
 				Server = resource.module.default;

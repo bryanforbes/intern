@@ -1,16 +1,19 @@
 import { pullFromArray } from './common/util';
 import { normalizePath } from './node/util';
 import { after } from '@dojo/core/aspect';
-import { createServer, IncomingMessage, Server as HttpServer, ServerResponse } from 'http';
-import { basename, join, resolve } from 'path';
-import { createReadStream, stat, readFile } from 'fs';
-import { lookup } from 'mime-types';
+import { Server as HttpServer } from 'http';
+import * as express from 'express';
+import { join, resolve } from 'path';
+import { stat, readFile } from 'fs';
 import { Socket } from 'net';
 import { mixin } from '@dojo/core/lang';
 import { Handle } from '@dojo/interfaces/core';
 import Node from './executors/Node';
 import { Message } from './channels/Base';
 import * as WebSocket from 'ws';
+import * as bodyParser from 'body-parser';
+
+const { mime } = express.static;
 
 export default class Server implements ServerProperties {
 	/** Executor managing this Server */
@@ -28,9 +31,11 @@ export default class Server implements ServerProperties {
 	/** Port to use for WebSocket connections */
 	socketPort: number;
 
+	protected _app: express.Express | null;
 	protected _codeCache: { [filename: string]: { mtime: number, data: string } } | null;
 	protected _httpServer: HttpServer | null;
 	protected _sessions: { [id: string]: { listeners: ServerListener[] } };
+	protected _static: express.Handler | null;
 	protected _wsServer: WebSocket.Server | null;
 
 	constructor(options: ServerOptions) {
@@ -42,13 +47,9 @@ export default class Server implements ServerProperties {
 
 	start() {
 		return new Promise<void>((resolve) => {
-			const server = this._httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
-				return this._handleHttp(request, response);
-			});
+			const app = this._app = express();
 			this._sessions = {};
 			this._codeCache = {};
-
-			const sockets: Socket[] = [];
 
 			this._wsServer = new WebSocket.Server({ port: this.port + 1 });
 			this._wsServer.on('connection', client => {
@@ -59,6 +60,27 @@ export default class Server implements ServerProperties {
 				this.executor.emit('error', error);
 			});
 
+			this._static = express.static(this.basePath);
+
+			app.use(bodyParser.json());
+			app.use(bodyParser.urlencoded({ extended: true }));
+
+			app.use(/^\/__intern/, express.static(this.executor.config.internPath));
+
+			// TODO: Allow user to add middleware here
+
+			app.use((request, response, next) => this._handleFile(request, response, next));
+			app.use((request, response, next) => this._handlePost(request, response, next));
+			app.use((_, response) => {
+				response.statusCode = 501;
+				response.end();
+			});
+
+			const server = this._httpServer = app.listen(this.port, () => {
+				resolve();
+			});
+
+			const sockets: Socket[] = [];
 			// If sockets are not manually destroyed then Node.js will keep itself running until they all expire
 			after(server, 'close', function () {
 				let socket: Socket | undefined;
@@ -77,10 +99,6 @@ export default class Server implements ServerProperties {
 					this.executor.log('HTTP connection closed,', sockets.length, 'open connections');
 				});
 			});
-
-			server.listen(this.port, () => {
-				resolve();
-			});
 		});
 	}
 
@@ -88,12 +106,12 @@ export default class Server implements ServerProperties {
 		this.executor.log('Stopping server...');
 		const promises: Promise<any>[] = [];
 
-		if (this._httpServer) {
+		if (this._app && this._httpServer) {
 			promises.push(new Promise(resolve => {
 				this._httpServer!.close(resolve);
 			}).then(() => {
 				this.executor.log('Stopped http server');
-				this._httpServer = null;
+				this._app = this._httpServer = null;
 			}));
 		}
 
@@ -133,88 +151,57 @@ export default class Server implements ServerProperties {
 		return session;
 	}
 
-	private _handleHttp(request: IncomingMessage, response: ServerResponse) {
-		if (request.method === 'GET') {
-			if (/\.js(?:$|\?)/.test(request.url!)) {
-				this._handleFile(request, response, true);
-			}
-			else {
-				this._handleFile(request, response);
-			}
+	private _handlePost(request: express.Request, response: express.Response, next: express.NextFunction) {
+		if (request.method !== 'POST') {
+			next();
 		}
-		else if (request.method === 'HEAD') {
-			this._handleFile(request, response, false, true);
-		}
-		else if (request.method === 'POST') {
-			request.setEncoding('utf8');
 
-			let data = '';
-			request.on('data', function (chunk) {
-				data += chunk;
+		try {
+			let rawMessages: any = request.body;
+
+			if (!Array.isArray(rawMessages)) {
+				rawMessages = [rawMessages];
+			}
+
+			const messages: Message[] = rawMessages.map(function (messageString: string) {
+				return JSON.parse(messageString);
 			});
 
-			request.on('end', () => {
-				try {
-					let rawMessages: any = JSON.parse(data);
+			this.executor.log('Received HTTP messages');
 
-					if (!Array.isArray(rawMessages)) {
-						rawMessages = [rawMessages];
-					}
-
-					const messages: Message[] = rawMessages.map(function (messageString: string) {
-						return JSON.parse(messageString);
-					});
-
-					this.executor.log('Received HTTP messages');
-
-					Promise.all(messages.map(message => this._handleMessage(message))).then(
-						() => {
-							response.statusCode = 204;
-							response.end();
-						},
-						() => {
-							response.statusCode = 500;
-							response.end();
-						}
-					);
-				}
-				catch (error) {
+			Promise.all(messages.map(message => this._handleMessage(message))).then(
+				() => {
+					response.statusCode = 204;
+					response.end();
+				},
+				() => {
 					response.statusCode = 500;
 					response.end();
 				}
-			});
+			);
 		}
-		else {
-			response.statusCode = 501;
+		catch (error) {
+			response.statusCode = 500;
 			response.end();
 		}
 	}
 
-	private _handleFile(
-		request: IncomingMessage,
-		response: ServerResponse,
-		shouldInstrument?: boolean,
-		omitContent?: boolean
-	) {
-		const file = /^\/+([^?]*)/.exec(request.url!)![1];
-		let wholePath: string;
+	private _handleFile(request: express.Request, response: express.Response, next: express.NextFunction) {
+		const wholePath = normalizePath(resolve(join(this.basePath, request.url)));
 
-		this.executor.log('Request for', file);
-
-		if (/^__intern\//.test(file)) {
-			wholePath = join(this.executor.config.internPath, file.replace(/^__intern\//, ''));
-			shouldInstrument = false;
-		}
-		else {
-			wholePath = resolve(join(this.basePath, file));
+		if (request.method === 'HEAD' || request.method === 'GET') {
+			if (!/\.js(?:$|\?)/.test(request.url) || !this.executor.shouldInstrumentFile(wholePath)) {
+				return this._static!(request, response, next);
+			}
+			else {
+				return this._handleInstrumented(wholePath, response, request.method === 'HEAD');
+			}
 		}
 
-		wholePath = normalizePath(wholePath);
+		next();
+	}
 
-		if (wholePath.charAt(wholePath.length - 1) === '/') {
-			wholePath += 'index.html';
-		}
-
+	private _handleInstrumented(wholePath: string, response: express.Response, omitContent: boolean) {
 		stat(wholePath, (error, stats) => {
 			// The server was stopped before this file was served
 			if (!this._httpServer) {
@@ -234,68 +221,46 @@ export default class Server implements ServerProperties {
 					'Content-Type': contentType,
 					'Content-Length': Buffer.byteLength(data)
 				});
-				response.end(data, (error?: Error) => {
-					if (error) {
-						this.executor.emit('error', new Error(`Error serving ${wholePath}: ${error.message}`));
-					}
-					else {
-						this.executor.log('Served', wholePath);
-					}
-				});
+				response.end(omitContent ? '' : data, callback);
 			};
-			const contentType = lookup(basename(wholePath)) || 'application/octet-stream';
-
-			if (shouldInstrument && this.executor.shouldInstrumentFile(wholePath)) {
-				const mtime = stats.mtime.getTime();
-				const codeCache = this._codeCache!;
-				if (codeCache[wholePath] && codeCache[wholePath].mtime === mtime) {
-					send(contentType, codeCache[wholePath].data);
+			const callback = (error?: Error) => {
+				if (error) {
+					this.executor.emit('error', new Error(`Error serving ${wholePath}: ${error.message}`));
 				}
 				else {
-					readFile(wholePath, 'utf8', (error, data) => {
-						// The server was stopped in the middle of the file read
-						if (!this._httpServer) {
-							return;
-						}
-
-						if (error) {
-							this._send404(response);
-							return;
-						}
-
-						// providing `wholePath` to the instrumenter instead of a partial filename is necessary because
-						// lcov.info requires full path names as per the lcov spec
-						data = this.executor.instrumentCode(data, wholePath);
-						codeCache[wholePath] = {
-							// strictly speaking mtime could reflect a previous version, assume those race conditions are rare
-							mtime: mtime,
-							data: data
-						};
-						send(contentType, data);
-					});
+					this.executor.log('Served', wholePath);
 				}
+			};
+
+			const contentType = mime.lookup(wholePath);
+			const mtime = stats.mtime.getTime();
+			const codeCache = this._codeCache!;
+
+			if (codeCache[wholePath] && codeCache[wholePath].mtime === mtime) {
+				send(contentType, codeCache[wholePath].data);
 			}
 			else {
-				response.writeHead(200, {
-					'Content-Type': contentType,
-					'Content-Length': stats.size
-				});
+				readFile(wholePath, 'utf8', (error, data) => {
+					// The server was stopped in the middle of the file read
+					if (!this._httpServer) {
+						return;
+					}
 
-				if (omitContent) {
-					response.end();
-				}
-				else {
-					const stream = createReadStream(wholePath);
-					stream.pipe(response);
-					stream.on('end', () => {
-						this.executor.log('Served', wholePath);
-					});
-					stream.on('error', (error: Error) => {
-						this.executor.log('Error serving', wholePath, ':', error);
-						// If the read stream errors, the write stream has to be manually closed
-						response.end();
-					});
-				}
+					if (error) {
+						this._send404(response);
+						return;
+					}
+
+					// providing `wholePath` to the instrumenter instead of a partial filename is necessary because
+					// lcov.info requires full path names as per the lcov spec
+					data = this.executor.instrumentCode(data, wholePath);
+					codeCache[wholePath] = {
+						// strictly speaking mtime could reflect a previous version, assume those race conditions are rare
+						mtime,
+						data
+					};
+					send(contentType, data);
+				});
 			}
 		});
 	}
@@ -344,7 +309,7 @@ export default class Server implements ServerProperties {
 		return Promise.all(listeners.map(listener => listener(message.name, message.data)));
 	}
 
-	private _send404(response: ServerResponse) {
+	private _send404(response: express.Response) {
 		response.writeHead(404, {
 			'Content-Type': 'text/html;charset=utf-8'
 		});
