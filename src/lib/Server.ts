@@ -13,6 +13,7 @@ import * as bodyParser from 'body-parser';
 import instrument from './middleware/instrument';
 import unhandled from './middleware/unhandled';
 import finalError from './middleware/finalError';
+import post from './middleware/post';
 
 export default class Server implements ServerProperties {
 	/** Executor managing this Server */
@@ -72,7 +73,7 @@ export default class Server implements ServerProperties {
 			app.use(
 				instrument(this),
 				express.static(this.basePath, { fallthrough: false }),
-				(request: express.Request, response: express.Response, next: express.NextFunction) => this._handlePost(request, response, next),
+				post(this, message => this._handleMessage(message)),
 				unhandled(this),
 				finalError(this)
 			);
@@ -148,41 +149,6 @@ export default class Server implements ServerProperties {
 			session = this._sessions[sessionId] = { listeners: [] };
 		}
 		return session;
-	}
-
-	private _handlePost(request: express.Request, response: express.Response, next: express.NextFunction) {
-		if (request.method !== 'POST') {
-			return next();
-		}
-
-		try {
-			let rawMessages: any = request.body;
-
-			if (!Array.isArray(rawMessages)) {
-				rawMessages = [rawMessages];
-			}
-
-			const messages: Message[] = rawMessages.map(function (messageString: string) {
-				return JSON.parse(messageString);
-			});
-
-			this.executor.log('Received HTTP messages');
-
-			Promise.all(messages.map(message => this._handleMessage(message)))
-				.then(() => {
-					response.statusCode = 204;
-					response.end();
-				})
-				.catch(() => {
-					response.statusCode = 500;
-					response.end();
-				})
-			;
-		}
-		catch (_) {
-			response.statusCode = 500;
-			response.end();
-		}
 	}
 
 	private _handleMessage(message: Message): Promise<any> {

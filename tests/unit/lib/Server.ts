@@ -116,7 +116,6 @@ registerSuite('lib/Server', function () {
 	const baseStaticHandler = sandbox.stub();
 
 	let server: _Server;
-	let handlePost: sinon.SinonSpy;
 	let executor: MockExecutor;
 
 	const mockServeStatic = sandbox.spy((path: string) => {
@@ -150,6 +149,10 @@ registerSuite('lib/Server', function () {
 		handler: unhandledHandler
 	} = mockMiddleware();
 	const {
+		middleware: post,
+		handler: postHandler
+	} = mockMiddleware();
+	const {
 		middleware: finalError,
 		handler: finalErrorHandler
 	} = mockMiddleware(true);
@@ -162,6 +165,7 @@ registerSuite('lib/Server', function () {
 				'http': mockHttp,
 				'ws': mockWebSocket,
 				'src/lib/middleware/instrument': { default: instrument },
+				'src/lib/middleware/post': { default: post },
 				'src/lib/middleware/unhandled': { default: unhandled },
 				'src/lib/middleware/finalError': { default: finalError },
 				'serve-static/index': mockServeStatic,
@@ -188,11 +192,9 @@ registerSuite('lib/Server', function () {
 			webSocketServers = [];
 			executor = mockNodeExecutor();
 			server = new Server({ executor: executor as any });
-			handlePost = sinon.spy(server, '_handlePost');
 		},
 
 		afterEach() {
-			handlePost.restore();
 			sandbox.reset();
 		},
 
@@ -229,6 +231,7 @@ registerSuite('lib/Server', function () {
 							{ fallthrough: false }
 						]);
 						assert.isTrue(instrument.calledOnce);
+						assert.isTrue(post.calledOnce);
 						assert.isTrue(unhandled.calledOnce);
 						assert.isTrue(finalError.calledOnce);
 					});
@@ -326,7 +329,7 @@ registerSuite('lib/Server', function () {
 							assert.isFalse(internStaticHandler.called);
 							assert.isTrue(instrumentHandler.calledOnce);
 							assert.isFalse(baseStaticHandler.called);
-							assert.isFalse(handlePost.called);
+							assert.isFalse(postHandler.called);
 							assert.isFalse(unhandledHandler.called);
 							assert.isTrue(finalErrorHandler.called);
 						});
@@ -348,7 +351,7 @@ registerSuite('lib/Server', function () {
 							assert.equal(response.data, 'what a fun time');
 							assert.isFalse(instrumentHandler.called);
 							assert.isFalse(baseStaticHandler.called);
-							assert.isFalse(handlePost.called);
+							assert.isFalse(postHandler.called);
 							assert.isFalse(unhandledHandler.called);
 							assert.isFalse(finalErrorHandler.called);
 						});
@@ -372,158 +375,41 @@ registerSuite('lib/Server', function () {
 							assert.isTrue(baseStaticHandler.calledOnce);
 							assert.equal(response.data, 'what a fun time');
 							assert.isFalse(internStaticHandler.called);
-							assert.isFalse(handlePost.called);
+							assert.isFalse(postHandler.called);
 							assert.isFalse(unhandledHandler.called);
 							assert.isFalse(finalErrorHandler.called);
 						});
 					},
 
-					'POST': {
-						beforeEach() {
+					'POST'() {
+						return server.start().then(() => {
 							instrumentHandler.callsArg(2);
 							baseStaticHandler.callsArg(2);
-						},
+							postHandler.callsFake((_request: any, response: any) => {
+								response.data = 'what a fun time';
+							});
 
-						tests: {
-							'single message'() {
+							const responder = httpServers[0].responder;
+							const request = new MockRequest('POST', '/foo');
+							const response = new MockResponse();
 
-								const dfd = this.async();
-								server.start().then(dfd.rejectOnError(() => {
-									const responder = httpServers[0].responder;
-									const request = new MockRequest('POST', '/');
-									request.body = JSON.stringify({
-										sessionId: 'foo',
-										id: 1,
-										name: 'foo',
-										data: 'bar'
-									});
-									const response = new MockResponse();
+							responder(request, response);
 
-									const listener = sinon.spy();
-									server.subscribe('foo', listener);
-
-									responder(request, response);
-
-									// Run checks in a timeout since messages are handled in a Promise callback
-									setTimeout(dfd.callback(() => {
-										assert.isFalse(unhandledHandler.calledOnce);
-										assert.isFalse(finalErrorHandler.calledOnce);
-
-										assert.equal(response.data, '', 'expected POST response to be empty');
-										assert.strictEqual(response.statusCode, 204, 'expected success status for good message');
-
-										assert.isTrue(listener.calledOnce);
-										assert.deepEqual(listener.firstCall.args, [ 'foo', 'bar' ]);
-									}));
-								}));
-							},
-
-							'array of messages'() {
-								const dfd = this.async();
-								server.start().then(dfd.rejectOnError(() => {
-									const responder = httpServers[0].responder;
-									const request = new MockRequest('POST', '/');
-									request.body = [
-										JSON.stringify({
-											sessionId: 'foo',
-											id: 1,
-											name: 'foo',
-											data: 'bar'
-										}),
-										JSON.stringify({
-											sessionId: 'foo',
-											id: 2,
-											name: 'baz',
-											data: 'blah'
-										}),
-										JSON.stringify({
-											sessionId: 'bar',
-											id: 1,
-											name: 'ham',
-											data: 'spam'
-										})
-									];
-									const response = new MockResponse();
-
-									const listener = sinon.spy();
-									server.subscribe('foo', listener);
-
-									responder(request, response);
-
-									// Run checks in a timeout since messages are handled in a Promise callback
-									setTimeout(dfd.callback(() => {
-										assert.isFalse(unhandledHandler.calledOnce);
-										assert.isFalse(finalErrorHandler.calledOnce);
-
-										assert.equal(response.data, '', 'expected POST response to be empty');
-										assert.strictEqual(response.statusCode, 204, 'expected success status for good messages');
-
-										assert.isTrue(listener.calledTwice);
-										assert.deepEqual(listener.args, [
-											[ 'foo', 'bar' ],
-											[ 'baz', 'blah' ]
-										]);
-									}));
-								}));
-							},
-
-							'bad message'() {
-								const dfd = this.async();
-								server.start().then(dfd.rejectOnError(() => {
-									const responder = httpServers[0].responder;
-									const request = new MockRequest('POST', '/');
-									request.body = '[[[';
-									const response = new MockResponse();
-
-									responder(request, response);
-
-									// Run checks in a timeout since messages are handled in a Promise callback
-									setTimeout(dfd.callback(() => {
-										assert.isFalse(unhandledHandler.calledOnce);
-										assert.isFalse(finalErrorHandler.calledOnce);
-										assert.equal(response.data, '', 'expected POST response to be empty');
-										assert.strictEqual(response.statusCode, 500, 'expected error status for bad message');
-									}));
-								}));
-							},
-
-							'message handler rejection'() {
-								const dfd = this.async();
-								server.start().then(dfd.rejectOnError(() => {
-
-									const responder = httpServers[0].responder;
-									const request = new MockRequest('POST', '/');
-									request.body = JSON.stringify({
-										sessionId: 'foo',
-										id: 1,
-										name: 'foo',
-										data: 'bar'
-									});
-									const response = new MockResponse();
-
-									const listener = sinon.stub().rejects(
-										new Error('bad message')
-									);
-									server.subscribe('foo', listener);
-
-									responder(request, response);
-
-									// Run checks in a timeout since messages are handled in a Promise callback
-									setTimeout(dfd.callback(() => {
-										assert.isFalse(unhandledHandler.calledOnce);
-										assert.isFalse(finalErrorHandler.calledOnce);
-
-										assert.equal(response.data, '', 'expected POST response to be empty');
-										assert.strictEqual(response.statusCode, 500, 'expected error status for bad message');
-									}));
-								}));
-							}
-						}
+							assert.isTrue(instrumentHandler.calledOnce);
+							assert.isTrue(baseStaticHandler.calledOnce);
+							assert.isTrue(postHandler.calledOnce);
+							assert.equal(response.data, 'what a fun time');
+							assert.isFalse(internStaticHandler.called);
+							assert.isFalse(unhandledHandler.called);
+							assert.isFalse(finalErrorHandler.called);
+						});
 					},
 
-					'bad method'() {
+					'unhandled request'() {
 						instrumentHandler.callsArg(2);
 						baseStaticHandler.callsArg(2);
+						postHandler.callsArg(2);
+						unhandledHandler.callsArgWith(2, createError(501));
 
 						return server.start().then(() => {
 							const responder = httpServers[0].responder;
@@ -532,8 +418,63 @@ registerSuite('lib/Server', function () {
 
 							responder(request, response);
 
-							assert.isTrue(unhandledHandler.called);
+							assert.isTrue(instrumentHandler.calledOnce);
+							assert.isTrue(baseStaticHandler.calledOnce);
+							assert.isTrue(postHandler.calledOnce);
+							assert.strictEqual(response.data, '');
+							assert.isFalse(internStaticHandler.called);
+							assert.isTrue(unhandledHandler.calledOnce);
+							assert.isTrue(finalErrorHandler.calledOnce);
+							assert.strictEqual(finalErrorHandler.firstCall.args[0].statusCode, 501);
 						});
+					}
+				},
+
+				'message handling': {
+					beforeEach() {
+						instrumentHandler.callsArg(2);
+						baseStaticHandler.callsArg(2);
+					},
+
+					tests: {
+						'successful handler'() {
+							return server.start().then(() => {
+								const listener = sinon.stub().resolves();
+								server.subscribe('foo', listener);
+
+								return post.firstCall.args[1]({
+										sessionId: 'foo',
+										id: 1,
+										name: 'foo',
+										data: 'bar'
+									})
+									.then(() => {
+										assert.isTrue(listener.calledOnce);
+									})
+								;
+							});
+						},
+
+						'message handler rejection'() {
+							return server.start().then(() => {
+								const listener = sinon.stub().rejects(
+									new Error('bad message')
+								);
+								server.subscribe('foo', listener);
+
+								return post.firstCall.args[1]({
+										sessionId: 'foo',
+										id: 1,
+										name: 'foo',
+										data: 'bar'
+									})
+									.then(() => assert(false, 'should not have resolved'))
+									.catch(() => {
+										assert.isTrue(listener.calledOnce);
+									})
+								;
+							});
+						}
 					}
 				}
 			},
