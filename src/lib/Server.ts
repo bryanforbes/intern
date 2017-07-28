@@ -1,10 +1,7 @@
 import { pullFromArray } from './common/util';
-import { normalizePath } from './node/util';
 import { after } from '@dojo/core/aspect';
 import { Server as HttpServer } from 'http';
 import * as express from 'express';
-import { join, resolve } from 'path';
-import { stat, readFile } from 'fs';
 import { Socket } from 'net';
 import { mixin } from '@dojo/core/lang';
 import { Handle } from '@dojo/interfaces/core';
@@ -12,10 +9,10 @@ import Node from './executors/Node';
 import { Message } from './channels/Base';
 import * as WebSocket from 'ws';
 import * as bodyParser from 'body-parser';
-import * as createError from 'http-errors';
-import * as statuses from 'statuses';
 
-const { mime } = express.static;
+import instrument from './middleware/instrument';
+import unhandled from './middleware/unhandled';
+import finalError from './middleware/finalError';
 
 export default class Server implements ServerProperties {
 	/** Executor managing this Server */
@@ -33,8 +30,11 @@ export default class Server implements ServerProperties {
 	/** Port to use for WebSocket connections */
 	socketPort: number;
 
+	get stopped() {
+		return !this._httpServer;
+	}
+
 	protected _app: express.Express | null;
-	protected _codeCache: { [filename: string]: { mtime: number, data: string } } | null;
 	protected _httpServer: HttpServer | null;
 	protected _sessions: { [id: string]: { listeners: ServerListener[] } };
 	protected _wsServer: WebSocket.Server | null;
@@ -50,7 +50,6 @@ export default class Server implements ServerProperties {
 		return new Promise<void>((resolve) => {
 			const app = this._app = express();
 			this._sessions = {};
-			this._codeCache = {};
 
 			this._wsServer = new WebSocket.Server({ port: this.port + 1 });
 			this._wsServer.on('connection', client => {
@@ -61,19 +60,21 @@ export default class Server implements ServerProperties {
 				this.executor.emit('error', error);
 			});
 
-			app.use(bodyParser.json());
-			app.use(bodyParser.urlencoded({ extended: true }));
+			app.use(
+				bodyParser.json(),
+				bodyParser.urlencoded({ extended: true })
+			);
 
 			app.use(/^\/__intern/, express.static(this.executor.config.internPath, { fallthrough: false }));
 
 			// TODO: Allow user to add middleware here
 
 			app.use(
-				this._handleInstrumentation.bind(this),
+				instrument(this),
 				express.static(this.basePath, { fallthrough: false }),
-				this._handlePost.bind(this),
-				(_: any, __: any, next: express.NextFunction) => next(createError(501)),
-				this._handleError.bind(this)
+				(request: express.Request, response: express.Response, next: express.NextFunction) => this._handlePost(request, response, next),
+				unhandled(this),
+				finalError(this)
 			);
 
 			const server = this._httpServer = app.listen(this.port, () => {
@@ -124,9 +125,7 @@ export default class Server implements ServerProperties {
 			}));
 		}
 
-		return Promise.all(promises).then(() => {
-			this._codeCache = null;
-		});
+		return Promise.all(promises);
 	}
 
 	/**
@@ -174,99 +173,16 @@ export default class Server implements ServerProperties {
 					response.statusCode = 204;
 					response.end();
 				})
-				.catch(error => {
-					next(createError(500, error));
+				.catch(() => {
+					response.statusCode = 500;
+					response.end();
 				})
 			;
 		}
-		catch (error) {
-			next(createError(500, error));
+		catch (_) {
+			response.statusCode = 500;
+			response.end();
 		}
-	}
-
-	private _handleInstrumentation(request: express.Request, response: express.Response, next: express.NextFunction) {
-		const wholePath = normalizePath(resolve(join(this.basePath, request.url)));
-
-		if (!(request.method === 'HEAD' || request.method === 'GET') ||
-			!this.executor.shouldInstrumentFile(wholePath)) {
-			return next();
-		}
-
-		stat(wholePath, (error, stats) => {
-			// The server was stopped before this file was served
-			if (!this._httpServer) {
-				return;
-			}
-
-			if (error || !stats.isFile()) {
-				this.executor.log('Unable to serve', wholePath, '(unreadable)');
-				return next(createError(404, error, { expose: false }));
-			}
-
-			this.executor.log('Serving', wholePath);
-
-			const send = (contentType: string, data: string) => {
-				response.writeHead(200, {
-					'Content-Type': contentType,
-					'Content-Length': Buffer.byteLength(data)
-				});
-				response.end(request.method === 'HEAD' ? '' : data, callback);
-			};
-			const callback = (error?: Error) => {
-				if (error) {
-					this.executor.emit('error', new Error(`Error serving ${wholePath}: ${error.message}`));
-				}
-				else {
-					this.executor.log('Served', wholePath);
-				}
-			};
-
-			const contentType = mime.lookup(wholePath);
-			const mtime = stats.mtime.getTime();
-			const codeCache = this._codeCache!;
-
-			if (codeCache[wholePath] && codeCache[wholePath].mtime === mtime) {
-				send(contentType, codeCache[wholePath].data);
-			}
-			else {
-				readFile(wholePath, 'utf8', (error, data) => {
-					// The server was stopped in the middle of the file read
-					if (!this._httpServer) {
-						return;
-					}
-
-					if (error) {
-						return next(createError(404, error, { expose: false }));
-					}
-
-					// providing `wholePath` to the instrumenter instead of a partial filename is necessary because
-					// lcov.info requires full path names as per the lcov spec
-					data = this.executor.instrumentCode(data, wholePath);
-					codeCache[wholePath] = {
-						// strictly speaking mtime could reflect a previous version, assume those race conditions are rare
-						mtime,
-						data
-					};
-					send(contentType, data);
-				});
-			}
-		});
-	}
-
-	private _handleError(
-		error: createError.HttpError,
-		request: express.Request,
-		response: express.Response,
-		_: express.NextFunction
-	) {
-		const message = error.expose ? error.message : statuses[error.status || response.statusCode];
-
-		response.writeHead(error.statusCode, {
-			'Content-Type': 'text/html;charset=utf-8'
-		});
-
-		response.end(`<!DOCTYPE html><title>${error.status} ${message}</title><h1>${error.status} ${message}: ${request.url}</h1>
-<!-- ${new Array(512).join('.')} -->`);
 	}
 
 	private _handleMessage(message: Message): Promise<any> {
