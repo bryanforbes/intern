@@ -1,6 +1,6 @@
 import _instrument from 'src/lib/middleware/instrument';
 import Server from 'src/lib/Server';
-import { mockNodeExecutor, mockServer, MockRequest, MockResponse } from '../../../support/unit/mocks';
+import { mockNodeExecutor, mockServer, MockRequest, MockResponse, mockInternObject } from '../../../support/unit/mocks';
 import { mockFs, mockPath, MockStats } from '../../../support/unit/nodeMocks';
 
 import * as sinon from 'sinon';
@@ -49,9 +49,10 @@ registerSuite('lib/middleware/instrument', function () {
 			});
 			shouldInstrumentFile = sandbox.stub(server.executor, 'shouldInstrumentFile');
 			instrumentCode = sandbox.stub(server.executor, 'instrumentCode');
-			handler = instrument(server);
+			handler = instrument();
 			request = new MockRequest('GET', '/foo/thing.js');
 			response = new MockResponse();
+			mockInternObject([ request, response ], server);
 			next = sinon.spy();
 		},
 

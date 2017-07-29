@@ -313,6 +313,23 @@ registerSuite('lib/Server', function () {
 				},
 
 				'http request handling': {
+					'decorated request and response'() {
+						server.basePath = '/';
+						return server.start().then(() => {
+							const responder = httpServers[0].responder;
+							const request = new MockRequest('GET', '/foo/thing.js');
+							const response = new MockResponse();
+
+							responder(request, response);
+
+							assert.isOk(request.intern);
+							assert.isOk(response.intern);
+							assert.strictEqual(request.intern, response.intern);
+							assert.strictEqual(request.intern.executor, server.executor as any);
+							assert.strictEqual(request.intern.basePath, server.basePath);
+							assert.strictEqual(request.intern.stopped, server.stopped);
+						});
+					},
 					'missing file'() {
 						server.basePath = '/';
 						return server.start().then(() => {
@@ -442,7 +459,13 @@ registerSuite('lib/Server', function () {
 								const listener = sinon.stub().resolves();
 								server.subscribe('foo', listener);
 
-								return post.firstCall.args[1]({
+								const responder = httpServers[0].responder;
+								const request = new MockRequest(<any>'DELETE', '/foo');
+								const response = new MockResponse();
+
+								responder(request, response);
+
+								return postHandler.firstCall.args[0].intern.handleMessage({
 										sessionId: 'foo',
 										id: 1,
 										name: 'foo',
@@ -462,7 +485,13 @@ registerSuite('lib/Server', function () {
 								);
 								server.subscribe('foo', listener);
 
-								return post.firstCall.args[1]({
+								const responder = httpServers[0].responder;
+								const request = new MockRequest(<any>'DELETE', '/foo');
+								const response = new MockResponse();
+
+								responder(request, response);
+
+								return postHandler.firstCall.args[0].intern.handleMessage({
 										sessionId: 'foo',
 										id: 1,
 										name: 'foo',

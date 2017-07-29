@@ -15,6 +15,29 @@ import unhandled from './middleware/unhandled';
 import finalError from './middleware/finalError';
 import post from './middleware/post';
 
+export interface InternObject {
+	readonly stopped: boolean;
+	readonly basePath: string;
+	readonly executor: Node;
+	handleMessage(message: Message): Promise<any>;
+}
+
+export interface InternRequest extends express.Request {
+	readonly intern: InternObject;
+}
+
+export interface InternResponse extends express.Response {
+	readonly intern: InternObject;
+}
+
+export interface InternRequestHandler {
+	(req: InternRequest, res: InternResponse, next: express.NextFunction): any;
+}
+
+export interface InternErrorRequestHandler {
+	(err: any, req: InternRequest, res: InternResponse, next: express.NextFunction): any;
+}
+
 export default class Server implements ServerProperties {
 	/** Executor managing this Server */
 	readonly executor: Node;
@@ -61,6 +84,37 @@ export default class Server implements ServerProperties {
 				this.executor.emit('error', error);
 			});
 
+			const intern = Object.create(null, {
+				stopped: {
+					enumerable: true,
+					get: () => this.stopped
+				},
+				basePath: {
+					enumerable: true,
+					get: () => this.basePath
+				},
+				executor: {
+					enumerable: true,
+					get: () => this.executor
+				},
+				handleMessage: {
+					enumerable: false,
+					writable: false,
+					configurable: false,
+					value: (message: Message) => this._handleMessage(message)
+				}
+			});
+
+			// Add "intern" object to both request and response objects
+			Object.defineProperty(app.request, 'intern', {
+				enumerable: true,
+				get: () => intern
+			});
+			Object.defineProperty(app.response, 'intern', {
+				enumerable: true,
+				get: () => intern
+			});
+
 			app.use(
 				bodyParser.json(),
 				bodyParser.urlencoded({ extended: true })
@@ -71,11 +125,11 @@ export default class Server implements ServerProperties {
 			// TODO: Allow user to add middleware here
 
 			app.use(
-				instrument(this),
+				instrument(),
 				express.static(this.basePath, { fallthrough: false }),
-				post(this, message => this._handleMessage(message)),
-				unhandled(this),
-				finalError(this)
+				post(),
+				unhandled(),
+				finalError()
 			);
 
 			const server = this._httpServer = app.listen(this.port, () => {

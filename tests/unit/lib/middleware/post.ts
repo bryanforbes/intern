@@ -1,6 +1,6 @@
 import post from 'src/lib/middleware/post';
 
-import { mockNodeExecutor, mockServer, MockRequest, MockResponse } from '../../../support/unit/mocks';
+import { mockNodeExecutor, mockServer, MockRequest, MockResponse, mockInternObject } from '../../../support/unit/mocks';
 
 import * as sinon from 'sinon';
 
@@ -18,9 +18,10 @@ registerSuite('lib/middleware/post', function () {
 				executor: mockNodeExecutor()
 			});
 			handleMessage = sinon.stub();
-			handler = post(server, handleMessage);
+			handler = post();
 			request = new MockRequest('POST', '/');
 			response = new MockResponse();
+			mockInternObject([ request, response ], server, handleMessage);
 			next = sinon.spy();
 			end = sinon.spy(response, 'end');
 		},

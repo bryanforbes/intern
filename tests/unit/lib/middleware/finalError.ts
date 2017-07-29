@@ -13,7 +13,7 @@ registerSuite('lib/middleware/finalError', function () {
 
 	return {
 		beforeEach() {
-			handler = finalError({});
+			handler = finalError();
 			request = new MockRequest('GET', '/foo/bar.js');
 			response = new MockResponse();
 			next = spy();

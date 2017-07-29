@@ -13,7 +13,7 @@ registerSuite('lib/middleware/unhandled', function () {
 
 	return {
 		beforeEach() {
-			handler = unhandled({});
+			handler = unhandled();
 			request = new MockRequest('GET', '/foo/bar.js');
 			response = new MockResponse();
 			next = spy();

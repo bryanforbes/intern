@@ -1,12 +1,13 @@
-import Server from '../Server';
+import { InternRequestHandler } from '../Server';
 import { Message } from '../channels/Base';
-import { RequestHandler } from 'express';
 
-export default function post(server: Server, handleMessage: (message: Message) => Promise<any>): RequestHandler {
+export default function post(): InternRequestHandler {
 	return (request, response, next) => {
 		if (request.method !== 'POST') {
 			return next();
 		}
+
+		const { executor, handleMessage } = request.intern;
 
 		try {
 			let rawMessages: any = request.body;
@@ -19,7 +20,7 @@ export default function post(server: Server, handleMessage: (message: Message) =
 				return JSON.parse(messageString);
 			});
 
-			server.executor.log('Received HTTP messages');
+			executor.log('Received HTTP messages');
 
 			Promise.all(messages.map(message => handleMessage(message)))
 				.then(() => {

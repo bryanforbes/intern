@@ -2,7 +2,7 @@ import { ErrorRequestHandler } from 'express';
 import { HttpError } from 'http-errors';
 import { STATUS_CODES } from 'http';
 
-export default function finalError(_: any): ErrorRequestHandler {
+export default function finalError(): ErrorRequestHandler {
 	return (error: HttpError, request, response, _) => {
 		const message = error.expose ? error.message : STATUS_CODES[error.statusCode];
 
