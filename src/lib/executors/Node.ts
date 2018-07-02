@@ -30,7 +30,7 @@ import { Config, EnvironmentSpec } from '../common/config';
 import Executor, { Events, Plugins } from './Executor';
 import { normalizePathEnding } from '../common/path';
 import { processOption, pullFromArray } from '../common/util';
-import { expandFiles, readSourceMap } from '../node/util';
+import { expandFiles, readSourceMap, normalizePath } from '../node/util';
 import ErrorFormatter from '../node/ErrorFormatter';
 import ProxiedSession from '../ProxiedSession';
 import Environment from '../Environment';
@@ -676,7 +676,7 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 			if (config.coverage) {
 				// Coverage file entries should be absolute paths
 				this._coverageFiles = expandFiles(config.coverage).map(path =>
-					resolve(path)
+					normalizePath(resolve(path))
 				);
 			}
 
@@ -786,7 +786,9 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 			// For all files that are marked for coverage that weren't read,
 			// read the file and instrument the code (adding it to the overall
 			// coverage map)
-			const coveredFiles = this._coverageMap.files();
+			const coveredFiles = this._coverageMap
+				.files()
+				.map(path => normalizePath(path));
 			const uncoveredFiles = this._coverageFiles!.filter(filename => {
 				return coveredFiles.indexOf(filename) === -1;
 			});
@@ -843,12 +845,14 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 	 */
 	protected _setInstrumentationHooks() {
 		hookRunInThisContext(
-			filename => this.shouldInstrumentFile(filename),
-			(code, filename) => this.instrumentCode(code, filename)
+			filename => this.shouldInstrumentFile(normalizePath(filename)),
+			(code, filename) =>
+				this.instrumentCode(code, normalizePath(filename))
 		);
 		this._unhookRequire = hookRequire(
-			filename => this.shouldInstrumentFile(filename),
-			(code, filename) => this.instrumentCode(code, filename)
+			filename => this.shouldInstrumentFile(normalizePath(filename)),
+			(code, filename) =>
+				this.instrumentCode(code, normalizePath(filename))
 		);
 	}
 
