@@ -212,6 +212,8 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 	 * Insert coverage instrumentation into a given code string
 	 */
 	instrumentCode(code: string, filename: string): string {
+		filename = normalizePath(filename);
+
 		this.log('Instrumenting', filename);
 		const sourceMap = readSourceMap(filename, code);
 		if (sourceMap) {
@@ -222,7 +224,7 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 			const instrumenter = this._instrumenter!;
 			const newCode = instrumenter.instrumentSync(
 				code,
-				normalize(filename),
+				normalizePath(normalize(filename)),
 				sourceMap
 			);
 
@@ -786,9 +788,7 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 			// For all files that are marked for coverage that weren't read,
 			// read the file and instrument the code (adding it to the overall
 			// coverage map)
-			const coveredFiles = this._coverageMap
-				.files()
-				.map(path => normalizePath(path));
+			const coveredFiles = this._coverageMap.files();
 			const uncoveredFiles = this._coverageFiles!.filter(filename => {
 				return coveredFiles.indexOf(filename) === -1;
 			});
@@ -846,13 +846,11 @@ export default class Node extends Executor<NodeEvents, Config, NodePlugins> {
 	protected _setInstrumentationHooks() {
 		hookRunInThisContext(
 			filename => this.shouldInstrumentFile(normalizePath(filename)),
-			(code, filename) =>
-				this.instrumentCode(code, normalizePath(filename))
+			(code, filename) => this.instrumentCode(code, filename)
 		);
 		this._unhookRequire = hookRequire(
 			filename => this.shouldInstrumentFile(normalizePath(filename)),
-			(code, filename) =>
-				this.instrumentCode(code, normalizePath(filename))
+			(code, filename) => this.instrumentCode(code, filename)
 		);
 	}
 
